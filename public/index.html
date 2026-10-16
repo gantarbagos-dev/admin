@@ -199,6 +199,16 @@ body[data-ui="slate"]{font-family:system-ui,sans-serif;letter-spacing:.15px}
 body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 5px #0003}
 
 .target-item.matched-target{border:1px solid #f59e0b!important;background:rgba(245,158,11,.13)!important;box-shadow:inset 3px 0 #f59e0b}.target-match-note{font-size:12px;color:#fbbf24;margin-top:8px;line-height:1.45}
+
+.api-action-status{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:8px 0 2px}
+.api-state{display:flex;align-items:center;gap:6px;min-width:0;padding:7px 8px;border:1px solid rgba(148,163,184,.18);border-radius:9px;background:rgba(15,23,42,.55);font-size:10px}
+.api-state i{width:7px;height:7px;flex:0 0 7px;border-radius:50%;background:#64748b}
+.api-state b{font-size:9px;letter-spacing:.3px;white-space:nowrap}
+.api-state em{margin-left:auto;font-size:9px;font-style:normal;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.api-state.pending i{background:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.12)}
+.api-state.ok i{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.12)}
+.api-state.error i{background:#ef4444;box-shadow:0 0 0 3px rgba(239,68,68,.12)}
+@media(max-width:480px){.api-action-status{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 
 </head>
@@ -306,6 +316,12 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
       <div class="field"><label>&nbsp;</label><button id="enterAll">ENTER</button></div>
       <div class="field"><label>&nbsp;</label><button id="leaveAll">LEAVE</button></div>
       <div class="field"><label>&nbsp;</label><button id="listRoom" class="green">LIST USER</button></div>
+    </div>
+    <div class="api-action-status" aria-live="polite">
+      <span id="loginActionStatus" class="api-state offline"><i></i><b>LOGIN</b><em>OFFLINE</em></span>
+      <span id="enterActionStatus" class="api-state offline"><i></i><b>ENTER</b><em>IDLE</em></span>
+      <span id="leaveActionStatus" class="api-state offline"><i></i><b>LEAVE</b><em>IDLE</em></span>
+      <span id="listActionStatus" class="api-state offline"><i></i><b>LIST USER</b><em>IDLE</em></span>
     </div>
     <div class="duel-settings-row">
       <div class="field"><label for="kickLimitPerWs">Kick Limit/s/WS</label><input id="kickLimitPerWs" type="number" min="1" max="200" value="100"></div>
@@ -425,12 +441,44 @@ function dispatchSocketEvent(m,i){
   if(isConfirmedKickEvent(m)){removeConfirmedKickedTarget(kickEventData(m).target);return}
   if(m.type==="proxy.error"){status(i,"PROXY ERROR","error");log(i,"PROXY ERROR: "+(m.data?.message||"unknown"));return}
   if(handleParticipants(m,i))return;
-  if(m.type==="auth.required"){log(i,"RECV auth.required");send(i,{type:"developer.login",username:cred(i).username,password:cred(i).password},true)}
-  else if(m.type==="session.ready"){clients[i].loggedIn=true;clients[i].inRoom=false;status(i,"ONLINE","online");startPing(i);send(i,{type:"wallet.balance"},true);log(i,"LOGIN OK")}
-  else if(m.type==="room.join.result"){const ok=m.ok===true||m.data?.ok===true||m.data?.joined===true||m.success===true;if(ok){clients[i].inRoom=true;log(i,"ENTER ROOM OK");const r=roomEl.value.trim();if(r)send(i,{type:"room.participants",room:r},true)}else log(i,"ENTER ROOM RESULT "+JSON.stringify(m))}
-  else if(m.type==="room.leave.result"){const ok=m.ok===true||m.data?.ok===true||m.data?.left===true||m.success===true;if(ok){clients[i].inRoom=false;log(i,"LEAVE ROOM OK")}else log(i,"LEAVE ROOM RESULT "+JSON.stringify(m))}
-  else if(m.type==="session.replaced"){clients[i].loggedIn=false;clients[i].inRoom=false;stopPing(i);status(i,"REPLACED","error")}
-  else if(m.type==="error"){clients[i].loggedIn=false;clients[i].inRoom=false;stopPing(i);status(i,"ERROR","error");log(i,"API ERROR "+JSON.stringify(m))}
+  if(m.type==="auth.required"){
+    setApiAction("loginActionStatus","pending","AUTH REQUIRED");
+    log(i,"RECV auth.required");
+    send(i,{type:"developer.login",username:cred(i).username,password:cred(i).password},true);
+  }
+  else if(m.type==="session.ready"){
+    clients[i].loggedIn=true;clients[i].inRoom=false;status(i,"ONLINE","online");
+    setApiAction("loginActionStatus","ok","ONLINE");
+    startPing(i);send(i,{type:"wallet.balance"},true);log(i,"LOGIN OK");
+  }
+  else if(m.type==="room.join.result"){
+    const ok=apiResultOk(m,"join");
+    if(ok){clients[i].inRoom=true;setApiAction("enterActionStatus","ok","ENTERED");log(i,"ENTER ROOM OK");const r=roomEl.value.trim();if(r)send(i,{type:"room.participants",room:r},true)}
+    else setApiAction("enterActionStatus","error","FAILED");
+    apiActionPending.room=null;
+    if(!ok)log(i,"ENTER ROOM RESULT "+JSON.stringify(m));
+  }
+  else if(m.type==="room.leave.result"){
+    const ok=apiResultOk(m,"leave");
+    if(ok){clients[i].inRoom=false;setApiAction("leaveActionStatus","ok","LEFT");log(i,"LEAVE ROOM OK")}
+    else setApiAction("leaveActionStatus","error","FAILED");
+    apiActionPending.room=null;
+    if(!ok)log(i,"LEAVE ROOM RESULT "+JSON.stringify(m));
+  }
+  else if(m.type==="session.replaced"){
+    clients[i].loggedIn=false;clients[i].inRoom=false;stopPing(i);status(i,"REPLACED","error");
+    setApiAction("loginActionStatus","error","SESSION REPLACED");
+  }
+  else if(m.type==="error"){
+    const message=String(m?.data?.error||m?.data?.message||m?.message||"API ERROR").toUpperCase();
+    if(!clients[i].loggedIn||/LOGIN|CREDENTIAL|AUTH/.test(message))setApiAction("loginActionStatus","error","LOGIN FAILED");
+    else if(apiActionPending.room==="join")setApiAction("enterActionStatus","error","FAILED");
+    else if(apiActionPending.room==="leave")setApiAction("leaveActionStatus","error","FAILED");
+    else if(apiActionPending.list)setApiAction("listActionStatus","error","FAILED");
+    clients[i].loggedIn=false;clients[i].inRoom=false;stopPing(i);status(i,"ERROR","error");
+    apiActionPending.room=null;apiActionPending.list=false;
+    log(i,"API ERROR "+JSON.stringify(m));
+  }
 }
 
 let autoTargetLocked=false;
@@ -440,6 +488,20 @@ let participantExpected=new Set();
 let participantReceived=new Set();
 function log(i,m){/* UI log removed */}
 function status(i,t,c){const e=document.getElementById(`status-${i}`);e.title=t;e.setAttribute("aria-label",t);e.className="status-balloon "+c}
+const apiActionPending={room:null,list:false};
+function setApiAction(id,state,label){
+  const e=document.getElementById(id);if(!e)return;
+  e.className="api-state "+state;
+  const statusText=e.querySelector("em");if(statusText)statusText.textContent=label;
+  e.title=label;
+}
+function apiResultOk(m,kind){
+  const d=m?.data||{};
+  if(m?.ok===true||m?.success===true||d?.ok===true||d?.success===true)return true;
+  if(kind==="join")return d?.joined===true||["joined","success","ok"].includes(String(d?.status||m?.status||"").toLowerCase());
+  if(kind==="leave")return d?.left===true||["left","success","ok"].includes(String(d?.status||m?.status||"").toLowerCase());
+  return false;
+}
 function formatNominal(value){
   if(value===null||value===undefined||value==="")return "—";
   const n=Number(value);
@@ -872,6 +934,11 @@ function logoutOne(i){
   const old=c.ws;c.ws=null;
   if(old){try{old.close(1000,"logout")}catch(e){}}
   status(i,"OFFLINE","offline");
+  setApiAction("loginActionStatus","offline","OFFLINE");
+  setApiAction("enterActionStatus","offline","IDLE");
+  setApiAction("leaveActionStatus","offline","IDLE");
+  setApiAction("listActionStatus","offline","IDLE");
+  apiActionPending.room=null;apiActionPending.list=false;
   log(i,"Logout + session WS dibersihkan");
 }
 function clearTroopClientState(){
@@ -912,15 +979,17 @@ async function runRoomBatchAction(action,room){
   if(roomBatchAction){log(0,`ROOM ${roomBatchAction.toUpperCase()} masih berjalan; abaikan ${action.toUpperCase()}`);return}
   roomBatchAction=action;
   const messageType=action==="join"?"room.join":"room.leave";
+  apiActionPending.room=action;
+  setApiAction(action==="join"?"enterActionStatus":"leaveActionStatus","pending",action==="join"?"SENDING":"SENDING");
   let sentCount=0;
   try{
     for(let i=0;i<N;i++){
       if(!clients[i].loggedIn)continue;
       if(sentCount>0)await roomBatchSleep(ROOM_SOCKET_DELAY_MS);
-      send(i,{type:messageType,room},true);
-      sentCount++;
+      if(send(i,{type:messageType,room},true))sentCount++;
     }
-    log(0,`${action==="join"?"ENTER":"LEAVE"} ALL selesai dikirim (${sentCount} WS, jeda antar WS ${ROOM_SOCKET_DELAY_MS} ms)`);
+    if(sentCount===0)setApiAction(action==="join"?"enterActionStatus":"leaveActionStatus","error","NO LOGIN");
+    log(0,`${action==="join"?"ENTER":"LEAVE"} selesai dikirim (${sentCount} koneksi, jeda ${ROOM_SOCKET_DELAY_MS} ms)`);
   }finally{roomBatchAction=null}
 }
 function enterAll(){const room=getRoom();if(!room)return;void runRoomBatchAction("join",room)}
@@ -1065,10 +1134,12 @@ function listUser(){
     if(clients[i].loggedIn)participantExpected.add(i);
   }
   updateTargetCount();
-  log(0,"LISTUSER: TARGET dan snapshot participant dikosongkan");
+  log(0,"LISTUSER: meminta snapshot participant; TARGET tetap dipertahankan");
+  setApiAction("listActionStatus","pending","REQUESTING");
+  apiActionPending.list=true;
   let sent=0;
   for(let i=0;i<N;i++)if(clients[i].loggedIn){if(send(i,{type:"room.participants",room},true))sent++}
-  if(!sent)return;
+  if(!sent){apiActionPending.list=false;setApiAction("listActionStatus","error","NO LOGIN");return}
 }
 function listRoom(){listUser()}
 function handleParticipants(m,i){
@@ -1076,6 +1147,8 @@ function handleParticipants(m,i){
   const users=extractUsers(m);
   const merged=applyParticipantSnapshot(i,users);
   if(!hasEnteredRefreshPending)refreshTargetMatches(merged);
+  apiActionPending.list=false;
+  setApiAction("listActionStatus","ok",`${merged.length} USERS`);
   log(i,`LISTROOM: WS${i+1} ${users.length} user | gabungan ${merged.length}`);
   return true;
 }
@@ -1086,7 +1159,9 @@ function loginOne(i){
   const generation=++c.generation;
   c.intentionalClose=false;c.loggedIn=false;c.inRoom=false;c.balance=null;setBalance(i,"—");stopPing(i);
   const previous=c.ws;c.ws=null;if(previous)try{previous.close(1000,"replace")}catch(e){}
-  status(i,"CONNECTING","connecting");log(i,"Connecting local proxy...");
+  status(i,"CONNECTING","connecting");
+  setApiAction("loginActionStatus","pending","CONNECTING");
+  log(i,"Connecting local proxy...");
   const ws=new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);c.ws=ws;
   const stale=()=>generation!==c.generation||c.ws!==ws;
   ws.onopen=()=>{if(stale()){try{ws.close(1000,"stale")}catch(e){};return}log(i,"Proxy OPEN; menunggu auth.required")};
