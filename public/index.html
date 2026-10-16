@@ -197,6 +197,8 @@ body[data-ui="rose"]{font-family:"Trebuchet MS",sans-serif}
 body[data-ui="rose"] button{border-radius:18px;font-weight:700}
 body[data-ui="slate"]{font-family:system-ui,sans-serif;letter-spacing:.15px}
 body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 5px #0003}
+
+.target-item.matched-target{border:1px solid #f59e0b!important;background:rgba(245,158,11,.13)!important;box-shadow:inset 3px 0 #f59e0b}.target-match-note{font-size:12px;color:#fbbf24;margin-top:8px;line-height:1.45}
 </style>
 
 </head>
@@ -239,27 +241,20 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
   </section>
 
   <div class="panel section-card login-troop-card">
-    <div class="section-heading"><div class="section-icon">👥</div><div><strong>Login Moderator</strong><small>Gunakan satu akun WebSocket moderator</small></div></div>
-    <div hidden aria-hidden="true"><input id="nametroop" value=""><input id="start" value="00"><input id="end" value="99"></div>
+    <div class="section-heading"><div class="section-icon">👤</div><div><strong>Akun Moderator</strong><small>Satu akun WebSocket Mig33 Reborn</small></div></div>
     <div class="setting-row pass-row">
-      <div class="field"><label for="passwordAll">PasswordAll</label><input id="passwordAll" type="password" placeholder="Password semua ID" autocomplete="new-password"></div>
-      <div class="field"><label>&nbsp;</label><button id="setPass">SET PASS</button></div>
+      <div class="field"><label for="username">USERNAME</label><input id="username" placeholder="Username" autocomplete="username"></div>
+      <div class="field"><label for="password">PASSWORD</label><input id="password" type="password" placeholder="Password" autocomplete="current-password"></div>
     </div>
-  </div>
-
-  <div class="panel section-card troop-table-card">
-    <div class="section-heading troop-heading"><div class="section-icon">👥</div><div><strong>Daftar Troop (10)</strong><small>Username &amp; password troop</small></div><span class="count-pill">10 / 10</span></div>
-    <table>
-      <thead><tr><th>Username</th><th>Password / Saldo</th><th>Status</th></tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
-  </div>
-
-  <div class="panel">
     <div class="actions login-actions">
-      <button class="primary" id="loginAll">LOGIN ALL</button>
-      <button class="danger" id="logoutAll">LOGOUT ALL</button>
+      <button class="primary" id="loginAll">LOGIN</button>
+      <button class="danger" id="logoutAll">LOGOUT</button>
     </div>
+  </div>
+  <div hidden aria-hidden="true">
+    <input id="passwordAll" value="">
+    <button id="setPass" type="button">SET PASS</button>
+    <table><tbody id="rows"></tbody></table>
   </div>
 
   </section>
@@ -308,8 +303,8 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
     </div>
     <div class="roomrow room-controls-bottom">
       <div class="field"><label for="room">Room</label><input id="room" placeholder="MIG33" autocomplete="off"></div>
-      <div class="field"><label>&nbsp;</label><button id="enterAll">ENTER ALL</button></div>
-      <div class="field"><label>&nbsp;</label><button id="leaveAll">LEAVE ALL</button></div>
+      <div class="field"><label>&nbsp;</label><button id="enterAll">ENTER</button></div>
+      <div class="field"><label>&nbsp;</label><button id="leaveAll">LEAVE</button></div>
       <div class="field"><label>&nbsp;</label><button id="listRoom" class="green">LIST USER</button></div>
     </div>
     <div class="duel-settings-row">
@@ -318,8 +313,9 @@ body[data-ui="slate"] button{border-radius:7px;font-weight:700;box-shadow:0 2px 
       <div class="field"><label for="delayTarget">Delay Target (ms)</label><input id="delayTarget" type="number" min="0" value="10"></div>
       
     </div>
-    <div class="kick-mode-layout" style="grid-template-columns:1fr">
-      <button id="kickAll" class="danger kickall-side">KICK ALL</button>
+    <div class="target-match-note" id="targetMatchNote" role="status">Belum ada event has entered. Target yang cocok akan ditandai setelah daftar USER diperbarui.</div>
+    <div class="actions" style="margin-top:10px">
+      <button id="confirmMatchedKick" class="danger" disabled>KONFIRMASI KICK TARGET COCOK (0)</button>
     </div>
   </div>
 
@@ -340,10 +336,13 @@ function switchTab(name){
 tabSetting.onclick=()=>switchTab("setting");
 tabDuel.onclick=()=>switchTab("duel");
 tabFlat.onclick=()=>switchTab("flat");
-const N=10;
+const N=1;
 const clients=Array.from({length:N},()=>({ws:null,loggedIn:false,inRoom:false,pingTimer:null,intentionalClose:false,balance:null,generation:0}));
 const rows=document.getElementById("rows"),roomEl=document.getElementById("room"),userList=document.getElementById("userList"),targetList=document.getElementById("targetList"),userCount=document.getElementById("userCount"),targetCount=document.getElementById("targetCount");
 let confirmedKickedTargets=new Set();let kickRunning=false;
+let hasEnteredRefreshPending=false;
+let matchReviewArmed=false;
+let matchedTargetNames=[];
 let participantUsers=[];
 let participantBySocket=Array.from({length:N},()=>[]);
 // Central frontend state: socket events update state first, then the UI is
@@ -382,7 +381,10 @@ function applyParticipantSnapshot(i,users){
   rebuildParticipantState();
   const merged=[...appState.participants.values()];
   queueParticipantRender();
-  scheduleAutoTarget(merged,autoTargetCycle);
+  if(hasEnteredRefreshPending){
+    hasEnteredRefreshPending=false;
+    refreshTargetMatches(merged,true);
+  }
   return merged;
 }
 function dispatchSocketEvent(m,i){
@@ -396,8 +398,14 @@ function dispatchSocketEvent(m,i){
   const roomText=String(eventData?.text??rawEvent?.text??eventData?.message??rawEvent?.message??eventData?.status_message??rawEvent?.status_message??"");
   if((eventType==="room.text"||eventType==="room.message.received")&&/\bhas entered\b/i.test(roomText)){
     const room=getRoom();
-    if(room&&clients[i]?.loggedIn)send(i,{type:"room.participants",room},true);
-    log(i,"ROOM EVENT: 'has entered' terdeteksi; daftar USER diperbarui. Periksa target sebelum kick.");
+    if(room&&clients[i]?.loggedIn){
+      hasEnteredRefreshPending=true;
+      matchReviewArmed=true;
+      send(i,{type:"room.participants",room},true);
+      const note=document.getElementById("targetMatchNote");
+      if(note)note.textContent="Event has entered terdeteksi. Memperbarui daftar USER untuk mencocokkan TARGET…";
+      log(i,"ROOM EVENT: 'has entered' terdeteksi; meminta snapshot USER. Tidak ada kick otomatis.");
+    }
   }
   if(m.type==="kick.target.confirmed"){removeConfirmedKickedTarget(m.target_username);return}
   if(m.type==="kick.socket.started"){
@@ -410,7 +418,8 @@ function dispatchSocketEvent(m,i){
   }
   if(m.type==="kick.job.finished"){
     kickRunning=false;
-    setKickButtonState(false);
+    const b=document.getElementById("confirmMatchedKick");
+    if(b){b.disabled=true;b.textContent=`AUTO KICK TARGET COCOK (${matchedTargetNames.length})`}
     return;
   }
   if(isConfirmedKickEvent(m)){removeConfirmedKickedTarget(kickEventData(m).target);return}
@@ -505,7 +514,7 @@ function updateBalanceFromMessage(i,m){
 
 function render(){for(let i=0;i<N;i++){insertRow(i)}}
 function insertRow(i){rows.insertAdjacentHTML("beforeend",`<tr><td><input id="user-${i}" placeholder="Username ${i+1}" autocomplete="off"></td><td class="password-cell"><div class="password-wrap"><input id="pass-${i}" type="password" placeholder="Password ${i+1}" autocomplete="new-password"><span id="balance-${i}" class="wallet-caption" title="Saldo">—</span></div></td><td style="text-align:center"><span id="status-${i}" class="status-balloon offline" title="OFFLINE" aria-label="OFFLINE"></span></td></tr>`) }
-function cred(i){return{username:document.getElementById(`user-${i}`).value.trim(),password:document.getElementById(`pass-${i}`).value}}
+function cred(i){return{username:document.getElementById("username").value.trim(),password:document.getElementById("password").value}}
 function getRoom(){const room=roomEl.value.trim();if(!room){return null}return room}
 function getRange(){
   const av=String(document.getElementById("start").value||"").trim();
@@ -893,9 +902,9 @@ async function logoutAll(){
   const resetPromise=fetch("/api/troop/reset",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}",cache:"no-store"}).catch(()=>null);
   await Promise.race([resetPromise,new Promise(r=>setTimeout(r,1000))]);
   for(let i=0;i<N;i++)logoutOne(i);
-  log(0,"LOGOUT ALL: seluruh WS/session troop lama dibersihkan; aplikasi tetap terbuka");
+  log(0,"LOGOUT: seluruh WS/session troop lama dibersihkan; aplikasi tetap terbuka");
 }
-// ENTER ALL / LEAVE ALL mengirim ke setiap WS satu per satu dengan jeda 80 ms.
+// ENTER / LEAVE mengirim ke setiap WS satu per satu dengan jeda 80 ms.
 let roomBatchAction=null;
 const ROOM_SOCKET_DELAY_MS=80;
 const roomBatchSleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -916,7 +925,7 @@ async function runRoomBatchAction(action,room){
 }
 function enterAll(){const room=getRoom();if(!room)return;void runRoomBatchAction("join",room)}
 function leaveAll(){
-  // LEAVE ALL resets SUICIDE even if no room is currently selected.
+  // LEAVE resets SUICIDE even if no room is currently selected.
   // Leave All always stops every active kick worker first.
   stopKickAll();const room=getRoom();if(!room)return;void runRoomBatchAction("leave",room)
 }
@@ -925,6 +934,62 @@ function extractUsers(m){
   if(!Array.isArray(arr)&&arr&&typeof arr==='object')arr=Object.values(arr);
   if(!Array.isArray(arr))arr=[];
   return arr.map(x=>typeof x==='string'?x:(x?.username??x?.user??x?.name??x?.nickname??x?.id??"" )).filter(Boolean);
+}
+function refreshTargetMatches(users,fromEnteredSnapshot=false){
+  const online=new Set((users||[]).map(u=>stateKey(u)).filter(Boolean));
+  matchedTargetNames=[...targetList.querySelectorAll(".target-item")]
+    .map(row=>String(row.dataset.username||"").trim())
+    .filter(name=>online.has(stateKey(name))&&!confirmedKickedTargets.has(stateKey(name)));
+  const matchedKeys=new Set(matchedTargetNames.map(stateKey));
+  [...targetList.querySelectorAll(".target-item")].forEach(row=>{
+    const isMatch=matchedKeys.has(stateKey(row.dataset.username));
+    row.classList.toggle("matched-target",isMatch);
+    row.title=isMatch?"Target ditemukan di daftar USER setelah has entered":"";
+  });
+  const button=document.getElementById("confirmMatchedKick");
+  const note=document.getElementById("targetMatchNote");
+  if(button){
+    button.disabled=true;
+    button.textContent=`AUTO KICK TARGET COCOK (${matchedTargetNames.length})`;
+  }
+  if(note){
+    note.textContent=matchedTargetNames.length
+      ? `${matchedTargetNames.length} target cocok ditemukan di USER. Tindakan otomatis hanya dipicu oleh snapshot setelah event has entered.`
+      : "Tidak ada TARGET yang cocok dengan USER saat ini. Tidak ada tindakan kick yang dijalankan.";
+  }
+  log(0,`HAS ENTERED: cocok ${matchedTargetNames.length} target.`);
+  if(fromEnteredSnapshot && matchReviewArmed){
+    matchReviewArmed=false;
+    if(matchedTargetNames.length){
+      log(0,`AUTO KICK: menjalankan ${matchedTargetNames.length} target cocok dengan delay target.`);
+      kickMatchedTargets();
+    }else{
+      log(0,"AUTO KICK: tidak ada target cocok; tidak ada tindakan dijalankan.");
+    }
+  }
+}
+async function kickMatchedTargets(){
+  if(kickRunning){alert("Proses kick sedang berjalan.");return}
+  const room=getRoom();
+  const online=new Set(participantUsers.map(stateKey));
+  const targets=matchedTargetNames.filter(name=>online.has(stateKey(name))&&targetHas(name)).slice(0,50);
+  if(!room){alert("Isi nama room terlebih dahulu.");return}
+  if(!targets.length){alert("Tidak ada target yang masih cocok dengan daftar USER.");return}
+  const delay=Math.max(0,Number(document.getElementById("delayTarget").value)||0);
+  const cfg={room,targets,loop:1,delaySocket:0,delayTarget:delay,kickLimitPerWs:Math.min(200,Math.max(1,Number(document.getElementById("kickLimitPerWs").value)||100))};
+  const button=document.getElementById("confirmMatchedKick");
+  if(button){button.disabled=true;button.textContent="KICK SEDANG DIPROSES…"}
+  kickRunning=true;
+  try{
+    const r=await fetch("/api/kick-loop",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(cfg)});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok||d.ok===false)throw new Error(d.error||`HTTP ${r.status}`);
+    log(0,`AUTO KICK: backend menerima pekerjaan untuk ${d.targets??targets.length} target; delay ${delay} ms.`);
+  }catch(e){
+    kickRunning=false;
+    if(button){button.disabled=true;button.textContent=`AUTO KICK TARGET COCOK (${matchedTargetNames.length})`}
+    log(0,"AUTO KICK gagal dimulai: "+e.message);
+  }
 }
 function showUsers(users,auto=true){
   const uniq=[...new Map((users||[])
@@ -1010,6 +1075,7 @@ function handleParticipants(m,i){
   if(m.type!=="room.participants.result"&&m.type!=="room.participants")return false;
   const users=extractUsers(m);
   const merged=applyParticipantSnapshot(i,users);
+  if(!hasEnteredRefreshPending)refreshTargetMatches(merged);
   log(i,`LISTROOM: WS${i+1} ${users.length} user | gabungan ${merged.length}`);
   return true;
 }
@@ -1340,7 +1406,7 @@ async function flatAll(){
   }
 }
 
-document.getElementById("loginBank").onclick=loginBank;document.getElementById("logoutBank").onclick=logoutBank;document.getElementById("flatButton").onclick=flatAll;document.getElementById("loginAll").onclick=loginAll;document.getElementById("logoutAll").onclick=logoutAll;document.getElementById("enterAll").onclick=enterAll;document.getElementById("leaveAll").onclick=leaveAll;document.getElementById("setPass").onclick=setPass;document.getElementById("listRoom").onclick=listUser;document.getElementById("clearTarget").onclick=clearTargets;document.getElementById("kickAll").onclick=kickAll;render();refreshUserList();updateTargetCount();
+document.getElementById("loginBank").onclick=loginBank;document.getElementById("logoutBank").onclick=logoutBank;document.getElementById("flatButton").onclick=flatAll;document.getElementById("loginAll").onclick=loginAll;document.getElementById("logoutAll").onclick=logoutAll;document.getElementById("enterAll").onclick=enterAll;document.getElementById("leaveAll").onclick=leaveAll;document.getElementById("setPass").onclick=setPass;document.getElementById("listRoom").onclick=listUser;document.getElementById("confirmMatchedKick").onclick=kickMatchedTargets;document.getElementById("clearTarget").onclick=clearTargets;render();refreshUserList();updateTargetCount();
 
 /* Isolated UI preference: no task, WebSocket, timer, or login functions are modified. */
 (function(){
